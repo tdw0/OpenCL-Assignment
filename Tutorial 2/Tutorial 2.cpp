@@ -1,5 +1,6 @@
 #include <iostream>
 #include <vector>
+#include <iomanip>
 
 #include "Utils.h"
 #include "CImg.h"
@@ -20,7 +21,7 @@ int main(int argc, char **argv) {
 	//Part 1 - handle command line options such as device selection, verbosity, etc.
 	int platform_id = 0;
 	int device_id = 0;
-	string image_filename = "test.ppm";
+	string image_filename = "test_large.pgm";
 
 	for (int i = 1; i < argc; i++) {
 		if ((strcmp(argv[i], "-p") == 0) && (i < (argc - 1))) { platform_id = atoi(argv[++i]); }
@@ -35,12 +36,8 @@ int main(int argc, char **argv) {
 	//detect any potential exceptions
 	try {
 		CImg<unsigned char> image_input(image_filename.c_str());
-		CImgDisplay disp_input(image_input,"input");
-
-		//a 3x3 convolution mask implementing an averaging filter
-		std::vector<float> convolution_mask = { 1.f / 9, 1.f / 9, 1.f / 9,
-												1.f / 9, 1.f / 9, 1.f / 9,
-												1.f / 9, 1.f / 9, 1.f / 9 };
+		CImgDisplay disp_input(image_input, "input");
+		int total_pixels = image_input.size();
 
 		//Part 3 - host operations
 		//3.1 Select computing devices
@@ -60,7 +57,7 @@ int main(int argc, char **argv) {
 		cl::Program program(context, sources);
 
 		//build and debug the kernel code
-		try { 
+		try {
 			program.build();
 		}
 		catch (const cl::Error& err) {
@@ -72,35 +69,115 @@ int main(int argc, char **argv) {
 
 		//Part 4 - device operations
 
+		//a 256 bin histogram
+		const int max_img_val = 255;
+		const int bin_size = 1;
+		std::vector<int> hist( (max_img_val / bin_size) + 1 );
+		
+		//cumulative histogram
+		std::vector<int> cum_hist( (max_img_val / bin_size) + 1);
+
+		//Look-up table
+		std::vector<int> LUT( (max_img_val / bin_size) + 1);
+
 		//device - buffers
 		cl::Buffer dev_image_input(context, CL_MEM_READ_ONLY, image_input.size());
 		cl::Buffer dev_image_output(context, CL_MEM_READ_WRITE, image_input.size()); //should be the same as input image
-//		cl::Buffer dev_convolution_mask(context, CL_MEM_READ_ONLY, convolution_mask.size()*sizeof(float));
+		cl::Buffer dev_hist(context, CL_MEM_READ_WRITE, hist.size()*sizeof(int));
+		cl::Buffer dev_cum_hist(context, CL_MEM_READ_WRITE, cum_hist.size()*sizeof(int));
+		cl::Buffer dev_lookup_table(context, CL_MEM_READ_WRITE, LUT.size()*sizeof(int));
 
 		//4.1 Copy images to device memory
 		queue.enqueueWriteBuffer(dev_image_input, CL_TRUE, 0, image_input.size(), &image_input.data()[0]);
-//		queue.enqueueWriteBuffer(dev_convolution_mask, CL_TRUE, 0, convolution_mask.size()*sizeof(float), &convolution_mask[0]);
+		queue.enqueueFillBuffer(dev_hist, (int)0, 0, hist.size()*sizeof(int)); //zero the H buffer
+		//queue.enqueueWriteBuffer(dev_hist, CL_TRUE, 0, hist.size()*sizeof(int), &hist[0]);
 
 		//4.2 Setup and execute the kernel (i.e. device code)
-		cl::Kernel kernel = cl::Kernel(program, "identity");
-		kernel.setArg(0, dev_image_input);
-		kernel.setArg(1, dev_image_output);
-//		kernel.setArg(2, dev_convolution_mask);
-
-		queue.enqueueNDRangeKernel(kernel, cl::NullRange, cl::NDRange(image_input.size()), cl::NullRange);
+		cl::Kernel hist_kernel = cl::Kernel(program, "ghetto_hist");
+		hist_kernel.setArg(0, dev_image_input);
+		//kernel.setArg(1, dev_image_output);
+		hist_kernel.setArg(1, dev_hist);
+		hist_kernel.setArg(2, bin_size);
+		queue.enqueueNDRangeKernel(hist_kernel, cl::NullRange, cl::NDRange(image_input.size()), cl::NullRange);
 
 		vector<unsigned char> output_buffer(image_input.size());
+
 		//4.3 Copy the result from device to host
+		//queue.enqueueReadBuffer(dev_image_output, CL_TRUE, 0, output_buffer.size(), &output_buffer.data()[0]);
+		queue.enqueueReadBuffer(dev_hist, CL_TRUE, 0, sizeof(int)*hist.size(), hist.data());
+
+		//Setup kernel for Cum_histogram
+		cl::Kernel cum_hist_kernel = cl::Kernel(program, "cum_hist");
+		cum_hist_kernel.setArg(0, dev_cum_hist);
+		cum_hist_kernel.setArg(1, dev_hist);
+		cum_hist_kernel.setArg(2, bin_size);
+		queue.enqueueNDRangeKernel(cum_hist_kernel, cl::NullRange, cl::NDRange(hist.size()), cl::NullRange);
+
+		//copy the result from device to host
+		queue.enqueueReadBuffer(dev_cum_hist, CL_TRUE, 0, sizeof(int)*cum_hist.size(), cum_hist.data());
+
+		//Setup kernel for LUT
+		cl::Kernel LUT_kernel = cl::Kernel(program, "lookup_table");
+		LUT_kernel.setArg(0, dev_cum_hist);
+		LUT_kernel.setArg(1, dev_lookup_table);
+		LUT_kernel.setArg(2, total_pixels);
+		LUT_kernel.setArg(3, bin_size);
+		queue.enqueueNDRangeKernel(LUT_kernel, cl::NullRange, cl::NDRange(cum_hist.size()), cl::NullRange);
+
+		//copy the result from device to host
+		queue.enqueueReadBuffer(dev_lookup_table, CL_TRUE, 0, sizeof(int)*LUT.size(), LUT.data());
+
+		// print LUT
+		cout << "------- LUT -------" << endl;
+		for (auto i : LUT) {
+			cout << i << endl;
+		}
+
+
+		//setup kernel for re-projection
+		cl::Kernel re_proj = cl::Kernel(program, "re_projection");
+		re_proj.setArg(0, dev_image_input);
+		re_proj.setArg(1, dev_image_output);
+		re_proj.setArg(2, dev_lookup_table);
+		re_proj.setArg(3, bin_size);
+		queue.enqueueNDRangeKernel(re_proj, cl::NullRange, cl::NDRange(image_input.size()), cl::NullRange);
+
+		//copy the result from device to host
 		queue.enqueueReadBuffer(dev_image_output, CL_TRUE, 0, output_buffer.size(), &output_buffer.data()[0]);
 
-		CImg<unsigned char> output_image(output_buffer.data(), image_input.width(), image_input.height(), image_input.depth(), image_input.spectrum());
-		CImgDisplay disp_output(output_image,"output");
 
- 		while (!disp_input.is_closed() && !disp_output.is_closed()
+		//// draw histogram
+		//cout << "------- Histogram -------" << endl;
+		//for (int bin = 0; bin < hist.size(); bin++) {
+		//	cout << setw(7) << bin << " | ";
+		//	const auto val = hist.at(bin);
+		//	for( int i = 0; i < (val / 100.0)/bin_size; i++ )
+		//		cout << "#" ;
+
+		//	cout << endl;
+		//}
+
+		////draw cumulative histogram
+		//cout << "------- Cumulative Histogram -------" << endl;
+		//for (int bin = 0; bin < cum_hist.size(); bin++) {
+		//	cout << setw(7) << bin << " | ";
+		//	const auto val = cum_hist.at(bin);
+		//	for( int i = 0; i < (val / 100.0)/30; i++ )
+		//		cout << "#" ;
+
+		//	cout << endl;
+		//}
+
+
+
+		CImg<unsigned char> output_image(output_buffer.data(), image_input.width(), image_input.height(), image_input.depth(), image_input.spectrum());
+		CImgDisplay disp_output(output_image, "output");
+
+		while (!disp_input.is_closed() && !disp_output.is_closed()
 			&& !disp_input.is_keyESC() && !disp_output.is_keyESC()) {
-		    disp_input.wait(1);
-		    disp_output.wait(1);
-	    }		
+			disp_input.wait(1);
+			disp_output.wait(1);
+		}
 
 	}
 	catch (const cl::Error& err) {
