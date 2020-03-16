@@ -21,7 +21,7 @@ int main(int argc, char **argv) {
 	//Part 1 - handle command line options such as device selection, verbosity, etc.
 	int platform_id = 0;
 	int device_id = 0;
-	string image_filename = "test_large.pgm";
+	string image_filename = "test.pgm";
 
 	for (int i = 1; i < argc; i++) {
 		if ((strcmp(argv[i], "-p") == 0) && (i < (argc - 1))) { platform_id = atoi(argv[++i]); }
@@ -44,7 +44,7 @@ int main(int argc, char **argv) {
 		cl::Context context = GetContext(platform_id, device_id);
 
 		//display the selected device
-		std::cout << "Runing on " << GetPlatformName(platform_id) << ", " << GetDeviceName(platform_id, device_id) << std::endl;
+		std::cout << "Running on " << GetPlatformName(platform_id) << ", " << GetDeviceName(platform_id, device_id) << std::endl;
 
 		//create a queue to which we will push commands for the device
 		cl::CommandQueue queue(context);
@@ -70,15 +70,15 @@ int main(int argc, char **argv) {
 		//Part 4 - device operations
 
 		//a 256 bin histogram
-		const int max_img_val = 255;
+		const int max_img_val = 256;
 		const int bin_size = 1;
-		std::vector<int> hist( (max_img_val / bin_size) + 1 );
+		std::vector<int> hist((max_img_val / bin_size));
 		
 		//cumulative histogram
-		std::vector<int> cum_hist( (max_img_val / bin_size) + 1);
+		std::vector<int> cum_hist((max_img_val / bin_size));
 
 		//Look-up table
-		std::vector<int> LUT( (max_img_val / bin_size) + 1);
+		std::vector<int> LUT((max_img_val / bin_size));
 
 		//device - buffers
 		cl::Buffer dev_image_input(context, CL_MEM_READ_ONLY, image_input.size());
@@ -145,28 +145,34 @@ int main(int argc, char **argv) {
 		//copy the result from device to host
 		queue.enqueueReadBuffer(dev_image_output, CL_TRUE, 0, output_buffer.size(), &output_buffer.data()[0]);
 
+		if (LUT.size() != max_img_val / bin_size) {
+			cout << "LUT.size() != max_img_val / bin_size!!!" << endl;
+			cout << "LUT.size()  = " << LUT.size() << endl;
+			cout << "max_img_val = " << max_img_val << endl;
+			cout << "bin_size    = " << bin_size << endl;
+		}
+		// draw histogram
+		cout << "------- Histogram -------" << endl;
+		for (int bin = 0; bin < hist.size(); bin++) {
+			cout << setw(7) << bin << " | ";
+			const auto val = hist.at(bin);
+			for( int i = 0; i < (val / 100.0)/bin_size; i++ )
+				cout << "#" ;
 
-		//// draw histogram
-		//cout << "------- Histogram -------" << endl;
-		//for (int bin = 0; bin < hist.size(); bin++) {
-		//	cout << setw(7) << bin << " | ";
-		//	const auto val = hist.at(bin);
-		//	for( int i = 0; i < (val / 100.0)/bin_size; i++ )
-		//		cout << "#" ;
-
-		//	cout << endl;
-		//}
+			cout << endl;
+		}
 
 		////draw cumulative histogram
-		//cout << "------- Cumulative Histogram -------" << endl;
-		//for (int bin = 0; bin < cum_hist.size(); bin++) {
-		//	cout << setw(7) << bin << " | ";
-		//	const auto val = cum_hist.at(bin);
-		//	for( int i = 0; i < (val / 100.0)/30; i++ )
-		//		cout << "#" ;
+		cout << "------- Cumulative Histogram -------" << endl;
+		for (int bin = 0; bin < cum_hist.size(); bin++) {
+			cout << setw(7) << bin << " | ";
+			const auto val = cum_hist.at(bin);
+			cout << val;
+			//for( int i = 0; i < (val / 100.0)/30; i++ )
+			//	cout << "#" ;
 
-		//	cout << endl;
-		//}
+			cout << endl;
+		}
 
 
 
