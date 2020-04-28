@@ -47,7 +47,7 @@ int main(int argc, char **argv) {
 		std::cout << "Running on " << GetPlatformName(platform_id) << ", " << GetDeviceName(platform_id, device_id) << std::endl;
 
 		//create a queue to which we will push commands for the device
-		cl::CommandQueue queue(context);
+		cl::CommandQueue queue(context, CL_QUEUE_PROFILING_ENABLE);
 
 		//3.2 Load & build the device code
 		cl::Program::Sources sources;
@@ -71,14 +71,15 @@ int main(int argc, char **argv) {
 
 		//a 256 bin histogram
 		const int max_img_val = 256;
-		const int bin_size = 1;
-		std::vector<int> hist((max_img_val / bin_size));
+		const int bin_size = 2;
+		const int num_bins = max_img_val / bin_size;
+		std::vector<int> hist(num_bins);
 		
 		//cumulative histogram
-		std::vector<int> cum_hist((max_img_val / bin_size));
+		std::vector<int> cum_hist(num_bins);
 
 		//Look-up table
-		std::vector<int> LUT((max_img_val / bin_size));
+		std::vector<int> LUT(num_bins);
 
 		//device - buffers
 		cl::Buffer dev_image_input(context, CL_MEM_READ_ONLY, image_input.size());
@@ -93,18 +94,27 @@ int main(int argc, char **argv) {
 		//queue.enqueueWriteBuffer(dev_hist, CL_TRUE, 0, hist.size()*sizeof(int), &hist[0]);
 
 		//4.2 Setup and execute the kernel (i.e. device code)
-		cl::Kernel hist_kernel = cl::Kernel(program, "ghetto_hist");
+		cl::Kernel hist_kernel = cl::Kernel(program, "faster_hist");
+		cl::Event prof_event;
 		hist_kernel.setArg(0, dev_image_input);
 		//kernel.setArg(1, dev_image_output);
 		hist_kernel.setArg(1, dev_hist);
 		hist_kernel.setArg(2, bin_size);
-		queue.enqueueNDRangeKernel(hist_kernel, cl::NullRange, cl::NDRange(image_input.size()), cl::NullRange);
+		hist_kernel.setArg(3, num_bins);
+		int px = image_input.size();
+		hist_kernel.setArg(4, px);
+		queue.enqueueNDRangeKernel(hist_kernel, cl::NullRange, cl::NDRange(image_input.size()), cl::NullRange, NULL, &prof_event);
 
 		vector<unsigned char> output_buffer(image_input.size());
 
 		//4.3 Copy the result from device to host
 		//queue.enqueueReadBuffer(dev_image_output, CL_TRUE, 0, output_buffer.size(), &output_buffer.data()[0]);
 		queue.enqueueReadBuffer(dev_hist, CL_TRUE, 0, sizeof(int)*hist.size(), hist.data());
+
+		//output kernel exec time
+		std::cout << "Kernel execution time [ns]:" <<
+			prof_event.getProfilingInfo<CL_PROFILING_COMMAND_END>() -
+			prof_event.getProfilingInfo<CL_PROFILING_COMMAND_START>() << std::endl;
 
 		//Setup kernel for Cum_histogram
 		cl::Kernel cum_hist_kernel = cl::Kernel(program, "cum_hist");
