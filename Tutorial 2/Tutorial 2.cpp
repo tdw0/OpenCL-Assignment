@@ -95,7 +95,8 @@ int main(int argc, char **argv) {
 
 		//4.2 Setup and execute the kernel (i.e. device code)
 		cl::Kernel hist_kernel = cl::Kernel(program, "faster_hist");
-		cl::Event prof_event;
+		cl::Event kernel_event;
+		cl::Event mem_event;
 		hist_kernel.setArg(0, dev_image_input);
 		//kernel.setArg(1, dev_image_output);
 		hist_kernel.setArg(1, dev_hist);
@@ -103,18 +104,21 @@ int main(int argc, char **argv) {
 		hist_kernel.setArg(3, num_bins);
 		int px = image_input.size();
 		hist_kernel.setArg(4, px);
-		queue.enqueueNDRangeKernel(hist_kernel, cl::NullRange, cl::NDRange(image_input.size()), cl::NullRange, NULL, &prof_event);
+		queue.enqueueNDRangeKernel(hist_kernel, cl::NullRange, cl::NDRange(image_input.size()), cl::NullRange, NULL, &kernel_event);
 
 		vector<unsigned char> output_buffer(image_input.size());
 
 		//4.3 Copy the result from device to host
 		//queue.enqueueReadBuffer(dev_image_output, CL_TRUE, 0, output_buffer.size(), &output_buffer.data()[0]);
-		queue.enqueueReadBuffer(dev_hist, CL_TRUE, 0, sizeof(int)*hist.size(), hist.data());
+		queue.enqueueReadBuffer(dev_hist, CL_TRUE, 0, sizeof(int)*hist.size(), hist.data(), NULL, &mem_event);
 
 		//output kernel exec time
 		std::cout << "Kernel execution time [ns]:" <<
-			prof_event.getProfilingInfo<CL_PROFILING_COMMAND_END>() -
-			prof_event.getProfilingInfo<CL_PROFILING_COMMAND_START>() << std::endl;
+			kernel_event.getProfilingInfo<CL_PROFILING_COMMAND_END>() -
+			kernel_event.getProfilingInfo<CL_PROFILING_COMMAND_START>() << std::endl;		//output mem xfer time
+		std::cout << "Memory transfer time [ns]:" <<
+			mem_event.getProfilingInfo<CL_PROFILING_COMMAND_END>() -
+			mem_event.getProfilingInfo<CL_PROFILING_COMMAND_START>() << std::endl;
 
 		//Setup kernel for Cum_histogram
 		cl::Kernel cum_hist_kernel = cl::Kernel(program, "cum_hist");
